@@ -247,6 +247,25 @@ move cc-switch.exe C:\Windows\System32\
 
 </details>
 
+### Linux binaries from GitHub Actions
+
+The **Compile Rust Binary** workflow builds two Linux x64 artifacts on pushes to `main` and can also be run manually from the Actions tab:
+
+| Artifact | Use |
+| --- | --- |
+| `cc-switch-linux-musl-binary` | Recommended for VPS systems, including those reporting `GLIBC_2.39 not found`. Statically linked and does not require the host's glibc. |
+| `cc-switch-linux-binary` | glibc build for systems with a compatible glibc version. |
+
+Open a successful workflow run and download the desired artifact. Extract the ZIP, then install the contained binary:
+
+```bash
+chmod +x cc-switch
+sudo install -m 755 cc-switch /usr/local/bin/cc-switch
+cc-switch --version
+```
+
+The musl binary can be used on both older and newer x64 VPS systems.
+
 ### Method 2: Install via Homebrew
 If you are using Homebrew on your machine, you can use Homebrew to install cc-switch.
 ```

@@ -3,10 +3,22 @@ name: Compile Rust Binary
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build Linux x64 (${{ matrix.libc }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libc: glibc
+            target: x86_64-unknown-linux-gnu
+            artifact: cc-switch-linux-binary
+          - libc: musl
+            target: x86_64-unknown-linux-musl
+            artifact: cc-switch-linux-musl-binary
 
     steps:
     - name: Checkout code
@@ -16,18 +28,56 @@ jobs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: 1.91.1
+        targets: ${{ matrix.target }}
 
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: src-tauri
+        key: ${{ matrix.target }}
+
+    - name: Install cross for musl
+      if: matrix.libc == 'musl'
+      run: cargo install cross --git https://github.com/cross-rs/cross --locked
+
+    - name: Install Linux dependencies (glibc)
+      if: matrix.libc == 'glibc'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
 
     - name: Build Release Binary
+      if: matrix.libc == 'glibc'
       working-directory: src-tauri
-      run: cargo build --release
+      run: cargo build --release --locked --target ${{ matrix.target }}
+
+    - name: Build Static musl Binary
+      if: matrix.libc == 'musl'
+      working-directory: src-tauri
+      run: cross build --release --locked --target ${{ matrix.target }}
+
+    - name: Verify musl binary has no dynamic dependencies
+      if: matrix.libc == 'musl'
+      shell: bash
+      working-directory: src-tauri
+      run: |
+        binary="target/${{ matrix.target }}/release/cc-switch"
+        program_headers="$(readelf --program-headers "$binary")"
+        dynamic_entries="$(readelf --dynamic "$binary")"
+        if [[ "$program_headers" == *INTERP* || "$dynamic_entries" == *"(NEEDED)"* ]]; then
+          echo "Expected a static musl binary without a dynamic loader or shared libraries." >&2
+          exit 1
+        fi
+
+    - name: Smoke test binary
+      working-directory: src-tauri
+      run: |
+        target/${{ matrix.target }}/release/cc-switch --version
+        target/${{ matrix.target }}/release/cc-switch --help > /dev/null
 
     - name: Upload Linux Binary Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: cc-switch-linux-binary
-        path: src-tauri/target/release/cc-switch
+        name: ${{ matrix.artifact }}
+        path: src-tauri/target/${{ matrix.target }}/release/cc-switch
+        if-no-files-found: error
