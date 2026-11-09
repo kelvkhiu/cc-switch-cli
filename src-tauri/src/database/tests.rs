@@ -484,8 +484,8 @@ fn schema_migration_upstream_v18_through_v24_preserves_data_and_is_idempotent() 
                 },
             )
             .expect("read migrated cursor");
-        let parser_state = (version >= 24)
-            .then(|| r#"{"pending":{"request_id":"upstream-request"}}"#.to_string());
+        let parser_state =
+            (version >= 24).then(|| r#"{"pending":{"request_id":"upstream-request"}}"#.to_string());
         assert_eq!(cursor, (11, 12, 13, 14, 15, parser_state));
         Database::apply_schema_migrations_on_conn(&conn).expect("repeat migration");
         assert_upstream_mcp_skills(&conn, version);
@@ -632,7 +632,9 @@ fn upstream_v24_full_backup_roundtrip_preserves_parser_state_and_flags() {
     seed_upstream_mcp_skills(&source.conn.lock().unwrap(), 24);
     let sql = source.export_sql_string().expect("export full v24 backup");
     let restored = Database::memory().unwrap();
-    restored.import_sql_string(&sql).expect("restore full backup");
+    restored
+        .import_sql_string(&sql)
+        .expect("restore full backup");
     let conn = restored.conn.lock().unwrap();
     assert_upstream_mcp_skills(&conn, 24);
     let parser_state: String = conn

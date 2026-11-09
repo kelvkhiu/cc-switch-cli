@@ -1461,11 +1461,25 @@ mod tests {
                     last_tail_fingerprint, parser_state
              FROM session_log_sync WHERE file_path = 'dsh:shared'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
         assert_eq!(
             cursor,
-            (4, 0, Some(5), Some(6), Some("pending parser state".to_string()))
+            (
+                4,
+                0,
+                Some(5),
+                Some(6),
+                Some("pending parser state".to_string())
+            )
         );
         Ok(())
     }
