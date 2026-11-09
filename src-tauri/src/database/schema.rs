@@ -63,8 +63,10 @@ impl Database {
             enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
             enabled_agy BOOLEAN NOT NULL DEFAULT 0,
             enabled_kimi BOOLEAN NOT NULL DEFAULT 0,
+            enabled_dsh BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
-            enabled_pi BOOLEAN NOT NULL DEFAULT 0
+            enabled_pi BOOLEAN NOT NULL DEFAULT 0,
+            enabled_omp BOOLEAN NOT NULL DEFAULT 0
         )",
             [],
         )
@@ -96,6 +98,7 @@ impl Database {
             enabled_mcode BOOLEAN NOT NULL DEFAULT 0,
             enabled_agy BOOLEAN NOT NULL DEFAULT 0,
             enabled_kimi BOOLEAN NOT NULL DEFAULT 0,
+            enabled_dsh BOOLEAN NOT NULL DEFAULT 0,
             enabled_hermes BOOLEAN NOT NULL DEFAULT 0,
             installed_at INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
@@ -325,7 +328,8 @@ impl Database {
                 last_line_offset INTEGER NOT NULL DEFAULT 0,
                 last_synced_at INTEGER NOT NULL,
                 last_byte_offset INTEGER,
-                last_tail_fingerprint INTEGER
+                last_tail_fingerprint INTEGER,
+                parser_state TEXT
             )",
             [],
         )
@@ -588,6 +592,40 @@ impl Database {
                         }
                         Self::set_user_version(conn, 22)?;
                     }
+                    22 => {
+                        // Oh My Pi persists only its MCP flag; Skills use
+                        // native directory state, just like upstream Pi.
+                        if Self::table_exists(conn, "mcp_servers")? {
+                            Self::add_column_if_missing(
+                                conn,
+                                "mcp_servers",
+                                "enabled_omp",
+                                "BOOLEAN NOT NULL DEFAULT 0",
+                            )?;
+                        }
+                        Self::set_user_version(conn, 23)?;
+                    }
+                    23 => {
+                        for table in ["mcp_servers", "skills"] {
+                            if Self::table_exists(conn, table)? {
+                                Self::add_column_if_missing(
+                                    conn,
+                                    table,
+                                    "enabled_dsh",
+                                    "BOOLEAN NOT NULL DEFAULT 0",
+                                )?;
+                            }
+                        }
+                        if Self::table_exists(conn, "session_log_sync")? {
+                            Self::add_column_if_missing(
+                                conn,
+                                "session_log_sync",
+                                "parser_state",
+                                "TEXT",
+                            )?;
+                        }
+                        Self::set_user_version(conn, 24)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
@@ -595,6 +633,11 @@ impl Database {
                     }
                 }
                 version = Self::get_user_version(conn)?;
+            }
+            // Upstream also repairs unreleased v24 databases that predate the
+            // finalized parser-state column. Keep that repair in the savepoint.
+            if Self::table_exists(conn, "session_log_sync")? {
+                Self::add_column_if_missing(conn, "session_log_sync", "parser_state", "TEXT")?;
             }
             Self::repair_proxy_request_logs_columns(conn)?;
             Self::repair_usage_rollup_semantics_column(conn)?;

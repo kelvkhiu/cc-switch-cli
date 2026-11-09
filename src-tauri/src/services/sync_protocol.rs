@@ -570,11 +570,120 @@ mod tests {
     }
 
     #[test]
-    fn upstream_v19_through_v22_database_schemas_are_accepted() {
-        for version in 19..=22 {
+    fn upstream_v19_through_v24_database_schemas_are_accepted() {
+        for version in 19..=24 {
             let sql = format!("PRAGMA user_version={version};\n");
             assert!(validate_sql_user_version_for_import(&sql).is_ok());
         }
+    }
+
+    fn skills_archive(content: &[u8]) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "remote-skill/SKILL.md",
+                super::super::webdav_sync::archive::zip_file_options(),
+            )
+            .expect("start skill archive entry");
+        writer.write_all(content).expect("write skill content");
+        writer.finish().expect("finish skill archive").into_inner()
+    }
+
+    #[test]
+    fn shared_v24_snapshot_restores_flags_and_preserves_local_parser_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let _env = crate::test_support::TestEnvGuard::isolated(temp.path());
+        let remote = Database::memory().unwrap();
+        {
+            let conn = remote.conn.lock().unwrap();
+            conn.execute_batch(
+                "DROP TABLE mcp_servers; DROP TABLE skills; DROP TABLE session_log_sync;",
+            )
+            .unwrap();
+            conn.execute_batch(include_str!("../database/fixtures/upstream_v24_compat.sql"))
+                .unwrap();
+            conn.execute_batch(
+                "INSERT INTO mcp_servers
+                     (id, name, server_config, enabled_omp, enabled_dsh)
+                 VALUES ('remote-mcp', 'Remote MCP', '{}', 1, 1);
+                 INSERT INTO skills (id, name, directory, enabled_dsh)
+                 VALUES ('remote-skill', 'Remote Skill', 'remote-skill', 1);
+                 INSERT INTO session_log_sync
+                     (file_path, last_modified, last_synced_at, parser_state)
+                 VALUES ('dsh:shared', 99, 99, 'remote parser state');",
+            )
+            .unwrap();
+            Database::set_user_version(&conn, 24).unwrap();
+        }
+        let sql = remote.export_sql_string_for_sync().unwrap();
+        let local = Database::init().unwrap();
+        local
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO session_log_sync
+                     (file_path, last_modified, last_synced_at, parser_state)
+                 VALUES ('dsh:shared', 11, 12, 'local parser state');",
+            )
+            .unwrap();
+        drop(local);
+
+        // This importer is shared by both the WebDAV and S3 transports.
+        apply_snapshot(sql.as_bytes(), &skills_archive(b"remote skill")).unwrap();
+
+        let local = Database::init().unwrap();
+        let conn = local.conn.lock().unwrap();
+        assert_eq!(Database::get_user_version(&conn).unwrap(), 24);
+        let flags: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT enabled_omp, enabled_dsh,
+                        (SELECT enabled_dsh FROM skills WHERE id = 'remote-skill')
+                 FROM mcp_servers WHERE id = 'remote-mcp'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(flags, (1, 1, 1));
+        let cursor: (i64, String) = conn
+            .query_row(
+                "SELECT last_modified, parser_state FROM session_log_sync WHERE file_path = 'dsh:shared'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cursor, (11, "local parser state".to_string()));
+        let skill = crate::services::skill::SkillService::get_ssot_dir()
+            .unwrap()
+            .join("remote-skill/SKILL.md");
+        assert_eq!(std::fs::read(skill).unwrap(), b"remote skill");
+    }
+
+    #[test]
+    fn shared_schema_25_rejection_leaves_database_and_skills_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let _env = crate::test_support::TestEnvGuard::isolated(temp.path());
+        let db = Database::init().unwrap();
+        db.set_setting("restore-sentinel", "keep me").unwrap();
+        drop(db);
+        let db_path = crate::database::database_path().unwrap();
+        let original_db = std::fs::read(&db_path).unwrap();
+        let ssot = crate::services::skill::SkillService::get_ssot_dir().unwrap();
+        let existing_skill = ssot.join("existing/SKILL.md");
+        std::fs::create_dir_all(existing_skill.parent().unwrap()).unwrap();
+        std::fs::write(&existing_skill, b"existing skill").unwrap();
+
+        let error = apply_snapshot(
+            "-- CC Switch SQLite 导出\nPRAGMA user_version=25;\n".as_bytes(),
+            &skills_archive(b"replacement skill"),
+        )
+        .expect_err("schema 25 must be rejected before database or Skills mutation");
+        assert!(error.to_string().contains("25"), "{error}");
+        assert_eq!(std::fs::read(&db_path).unwrap(), original_db);
+        assert_eq!(std::fs::read(existing_skill).unwrap(), b"existing skill");
+        assert!(!ssot.join("remote-skill").exists());
     }
 
     #[test]

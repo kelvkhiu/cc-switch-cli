@@ -1047,6 +1047,8 @@ impl Database {
                     "enabled_grokbuild",
                     "enabled_opencode",
                     "enabled_hermes",
+                    "enabled_omp",
+                    "enabled_dsh",
                 ],
                 &["id"],
             ),
@@ -1081,6 +1083,7 @@ impl Database {
                     "enabled_grokbuild",
                     "enabled_opencode",
                     "enabled_hermes",
+                    "enabled_dsh",
                     "installed_at",
                     "content_hash",
                     "updated_at",
@@ -1093,6 +1096,19 @@ impl Database {
                 &["owner", "name"],
             ),
             ("settings", &["key", "value"], &["key"]),
+            (
+                "session_log_sync",
+                &[
+                    "file_path",
+                    "last_modified",
+                    "last_line_offset",
+                    "last_synced_at",
+                    "last_byte_offset",
+                    "last_tail_fingerprint",
+                    "parser_state",
+                ],
+                &["file_path"],
+            ),
             (
                 "session_usage_dedup",
                 &["data_source", "request_id", "semantic_id", "has_entry_id"],
@@ -1861,9 +1877,9 @@ mod tests {
             conn.execute(
                 "INSERT INTO session_log_sync
                     (file_path, last_modified, last_line_offset, last_synced_at,
-                     last_byte_offset, last_tail_fingerprint)
-                 VALUES ('/shared/session.jsonl', 999, 999, 999, 998, 997)",
-                [],
+                     last_byte_offset, last_tail_fingerprint, parser_state)
+                 VALUES ('/shared/session.jsonl', 999, 999, 999, 998, 997, ?1)",
+                [r#"{"pending":"remote-request"}"#],
             )?;
         }
         let remote_sql = remote_db.export_sql_string_for_sync()?;
@@ -1902,9 +1918,9 @@ mod tests {
             conn.execute(
                 "INSERT INTO session_log_sync
                     (file_path, last_modified, last_line_offset, last_synced_at,
-                     last_byte_offset, last_tail_fingerprint)
-                 VALUES ('/shared/session.jsonl', 123, 12, 1000, 456, 789)",
-                [],
+                     last_byte_offset, last_tail_fingerprint, parser_state)
+                 VALUES ('/shared/session.jsonl', 123, 12, 1000, 456, 789, ?1)",
+                [r#"{"pending":"local-request"}"#],
             )?;
         }
 
@@ -1965,11 +1981,11 @@ mod tests {
             stream_logs, 1,
             "local stream check logs should be preserved"
         );
-        let local_sync: (i64, i64, i64, i64, i64) = {
+        let local_sync: (i64, i64, i64, i64, i64, String) = {
             let conn = crate::database::lock_conn!(local_db.conn);
             conn.query_row(
                 "SELECT last_modified, last_line_offset, last_synced_at,
-                        last_byte_offset, last_tail_fingerprint
+                        last_byte_offset, last_tail_fingerprint, parser_state
                  FROM session_log_sync
                  WHERE file_path = '/shared/session.jsonl'",
                 [],
@@ -1980,13 +1996,21 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )?
         };
         assert_eq!(
             local_sync,
-            (123, 12, 1000, 456, 789),
+            (
+                123,
+                12,
+                1000,
+                456,
+                789,
+                r#"{"pending":"local-request"}"#.to_string()
+            ),
             "WebDAV restore must not replace local file progress with a remote device's cursor"
         );
         let semantics: (i64, i64) = {

@@ -1201,10 +1201,16 @@ fn update_claude_sync_state_conn(
         .unwrap_or(0);
 
     conn.prepare_cached(
-        "INSERT OR REPLACE INTO session_log_sync
+        "INSERT INTO session_log_sync
              (file_path, last_modified, last_line_offset, last_synced_at, last_byte_offset,
               last_tail_fingerprint)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5)",
+         VALUES (?1, ?2, 0, ?3, ?4, ?5)
+         ON CONFLICT(file_path) DO UPDATE SET
+            last_modified = excluded.last_modified,
+            last_line_offset = excluded.last_line_offset,
+            last_synced_at = excluded.last_synced_at,
+            last_byte_offset = excluded.last_byte_offset,
+            last_tail_fingerprint = excluded.last_tail_fingerprint",
     )
     .and_then(|mut stmt| {
         stmt.execute(rusqlite::params![
@@ -1438,6 +1444,31 @@ pub(crate) fn delete_session_logs_covered_by_proxy_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_cursor_updates_preserve_upstream_parser_state() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let conn = lock_conn!(db.conn);
+        conn.execute(
+            "INSERT INTO session_log_sync
+                 (file_path, last_modified, last_line_offset, last_synced_at, parser_state)
+             VALUES ('dsh:shared', 1, 2, 3, 'pending parser state')",
+            [],
+        )?;
+        update_claude_sync_state_conn(&conn, "dsh:shared", 4, 5, Some(6))?;
+        let cursor: (i64, i64, Option<i64>, Option<i64>, Option<String>) = conn.query_row(
+            "SELECT last_modified, last_line_offset, last_byte_offset,
+                    last_tail_fingerprint, parser_state
+             FROM session_log_sync WHERE file_path = 'dsh:shared'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        assert_eq!(
+            cursor,
+            (4, 0, Some(5), Some(6), Some("pending parser state".to_string()))
+        );
+        Ok(())
+    }
 
     #[test]
     fn memory_database_session_guard_does_not_create_a_lock_file() -> Result<(), AppError> {
