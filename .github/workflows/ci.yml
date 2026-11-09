@@ -1,0 +1,28 @@
+name: Compile Rust Binary
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Build Release Binary
+      run: cargo build --release
+
+    - name: Upload Linux Binary Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cc-switch-linux-binary
+        path: target/release/cc-switch
